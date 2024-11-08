@@ -153,26 +153,118 @@ def create_sales_history_window():
     history_window.title("Sales History")
     history_window.geometry("800x500")
 
-    # Treeview for sales records
+    # Columns setup with sorting indicators and dropdowns for Payment Status and Payment Method
     columns = ("ID", "Customer Name", "Timestamp", "Payment Status", "Payment Method", "Total")
+    sort_order = {col: False for col in columns}  # Track sort direction for each sortable column
+
+    # Treeview setup
     tree = ttk.Treeview(history_window, columns=columns, show="headings")
     for col in columns:
-        tree.heading(col, text=col)
+        if col not in ["Payment Status", "Payment Method"]:  # Exclude sorting for Payment Status and Method
+            tree.heading(col, text=col, command=lambda _col=col: sort_by_column(_col))
+        else:
+            tree.heading(col, text=col)  # No sorting arrow or command for these columns
         tree.column(col, width=100 if col == "ID" else 150)
     tree.pack(fill=BOTH, expand=True)
 
-    # Load all sales records
+    # Variables to store selected filter options
+    payment_status_var = StringVar(value="All")
+    payment_method_var = StringVar(value="All")
+
+    # Function to load sales records with applied filters
     def load_sales():
         for row in tree.get_children():
             tree.delete(row)
+
+        query = """SELECT bill.id, customer_name, timestamp, payment_status, payment_method, 
+                          (SELECT SUM(qty * price) FROM solditems WHERE solditems.bill_id = bill.id) AS total 
+                   FROM bill"""
+        
+        filters = []
+        if payment_status_var.get() != "All":
+            filters.append(f"payment_status = '{payment_status_var.get()}'")
+        if payment_method_var.get() != "All":
+            filters.append(f"payment_method = '{payment_method_var.get()}'")
+
+        if filters:
+            query += " WHERE " + " AND ".join(filters)
+
+        query += " ORDER BY bill.id"  # Default sorting by ID
+
         conn = sqlite3.connect("sales.db")
         cursor = conn.cursor()
-        cursor.execute("SELECT bill.id, customer_name, timestamp, payment_status, payment_method, "
-                       "(SELECT SUM(qty * price) FROM solditems WHERE solditems.bill_id = bill.id) AS total "
-                       "FROM bill")
+        cursor.execute(query)
         for sale in cursor.fetchall():
             tree.insert("", "end", values=sale)
         conn.close()
+
+    # Update Payment Status column header and reload sales
+    def update_payment_status():
+        status = payment_status_var.get()
+        tree.heading("Payment Status", text=f"Payment Status" + (f": {status}" if status != "All" else ""))
+        load_sales()
+
+    # Update Payment Method column header and reload sales
+    def update_payment_method():
+        method = payment_method_var.get()
+        tree.heading("Payment Method", text=f"Payment Method" + (f": {method}" if method != "All" else ""))
+        load_sales()
+
+    # Dropdown menu for Payment Status in the column header
+    def show_payment_status_menu(event):
+        menu = Menu(history_window, tearoff=0)
+        for status in ["All", "Paid", "Unpaid"]:
+            menu.add_radiobutton(label=status, variable=payment_status_var, value=status, command=update_payment_status)
+        menu.post(event.x_root, event.y_root)
+
+    # Dropdown menu for Payment Method in the column header
+    def show_payment_method_menu(event):
+        menu = Menu(history_window, tearoff=0)
+        for method in ["All", "QR", "Cash"]:
+            menu.add_radiobutton(label=method, variable=payment_method_var, value=method, command=update_payment_method)
+        menu.post(event.x_root, event.y_root)
+
+    # Bind headers to show dropdowns on click
+    tree.heading("Payment Status", text="Payment Status", command=lambda: None)
+    tree.heading("Payment Method", text="Payment Method", command=lambda: None)
+    tree.column("Payment Status", anchor=CENTER)
+    tree.column("Payment Method", anchor=CENTER)
+
+    # Event bindings to show dropdown menus when the header is clicked
+    def on_header_click(event):
+        region = tree.identify("region", event.x, event.y)
+        column = tree.identify_column(event.x)
+
+        if region == "heading":
+            if column == "#4":  # Payment Status column index
+                show_payment_status_menu(event)
+            elif column == "#5":  # Payment Method column index
+                show_payment_method_menu(event)
+
+    tree.bind("<Button-1>", on_header_click)
+
+    # Sorting functionality for columns with reversed arrow indicator directions
+    def sort_by_column(col):
+        data = [(tree.set(child, col), child) for child in tree.get_children('')]
+        
+        # Toggle sorting direction
+        descending = sort_order[col] = not sort_order[col]
+
+        # For numeric columns, sort numerically
+        if col in ["ID", "Total"]:
+            data.sort(key=lambda t: float(t[0]) if t[0] else 0, reverse=descending)
+        else:
+            data.sort(reverse=descending)
+
+        for index, (_, child) in enumerate(data):
+            tree.move(child, '', index)
+
+        # Update heading with reversed arrow indicator only for sortable columns
+        for c in columns:
+            if c == col:
+                tree.heading(c, text=f"{c} {'↑' if descending else '↓'}", command=lambda _col=c: sort_by_column(_col))
+            elif c not in ["Payment Status", "Payment Method"]:  # Reset others excluding non-sortable columns
+                tree.heading(c, text=c, command=lambda _col=c: sort_by_column(_col))
 
     # Delete selected sale
     def delete_sale():
